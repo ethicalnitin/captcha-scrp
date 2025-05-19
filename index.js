@@ -1,3 +1,4 @@
+// Import necessary libraries
 const express = require('express');
 const axios = require('axios');
 const cookieParser = require('cookie-parser');
@@ -5,7 +6,9 @@ const cors = require('cors'); // Import cors
 
 // Create an Express application instance
 const app = express();
-const port = 3000; // You can choose any available port
+// Use the PORT environment variable provided by the hosting platform (like DigitalOcean),
+// or default to 3000 for local development.
+const port = process.env.PORT || 3000;
 
 // Use middleware
 app.use(cors()); // Enable CORS for all routes
@@ -21,7 +24,7 @@ async function fetchCaptcha(url, cookies, referer, userAgent) {
             headers: {
                 'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.5', // Adjust based on the specific curl request
-                'Cookie': cookies, // Pass cookies received from the frontend
+                'Cookie': cookies, // <--- THIS LINE USES THE COOKIES RECEIVED FROM THE FRONTEND
                 'Referer': referer, // Pass referer received from the frontend
                 'User-Agent': userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36', // Default or pass from frontend
                 // Include other headers from the curl requests as needed
@@ -52,14 +55,22 @@ async function fetchCaptcha(url, cookies, referer, userAgent) {
     }
 }
 
+// --- Health Check Endpoint ---
+// This endpoint is added specifically for hosting platforms like DigitalOcean
+// to check if the application is running and responsive.
+app.get('/health', (req, res) => {
+    res.status(200).send('OK');
+});
+
+
 // --- Route for High Court Captcha ---
 app.get('/captcha/highcourt', async (req, res) => {
-    // Extract cookies and other headers from the frontend request
-    // Note: req.cookies will be an object if using cookie-parser.
+    // Extract cookies from the frontend request using cookie-parser
+    // req.cookies is an object { cookieName: cookieValue, ... }
     // We need to format it back into a string for the 'Cookie' header.
     const cookiesString = Object.entries(req.cookies)
         .map(([key, value]) => `${key}=${value}`)
-        .join('; ');
+        .join('; '); // <--- COOKIES FROM FRONTEND ARE CONVERTED TO STRING HERE
 
     const referer = req.headers['referer'] || 'https://hcservices.ecourts.gov.in/'; // Use frontend referer or default
     const userAgent = req.headers['user-agent']; // Use frontend user-agent
@@ -86,10 +97,10 @@ app.get('/captcha/highcourt', async (req, res) => {
 
 // --- Route for District Court Captcha ---
 app.get('/captcha/districtcourt', async (req, res) => {
-    // Extract cookies and other headers from the frontend request
+    // Extract cookies from the frontend request using cookie-parser
     const cookiesString = Object.entries(req.cookies)
         .map(([key, value]) => `${key}=${value}`)
-        .join('; ');
+        .join('; '); // <--- COOKIES FROM FRONTEND ARE CONVERTED TO STRING HERE
 
     const referer = req.headers['referer'] || 'https://lucknow.dcourts.gov.in/case-status-search-by-petitioner-respondent/'; // Use frontend referer or default
     const userAgent = req.headers['user-agent']; // Use frontend user-agent
