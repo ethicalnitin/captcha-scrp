@@ -11,7 +11,9 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // Use middleware
-app.use(cors()); // Enable CORS for all routes
+app.use(cors({
+  origin: 'https://verdant-cucurucho-13134b.netlify.app' // Allow requests only from this specific origin
+}));
 app.use(cookieParser()); // Parse cookies from incoming requests
 app.use(express.json()); // For parsing application/json (if needed for other routes)
 app.use(express.urlencoded({ extended: true })); // For parsing application/x-www-form-urlencoded (if needed)
