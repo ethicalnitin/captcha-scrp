@@ -186,19 +186,18 @@ app.get('/health', (req, res) => {
 app.post('/captcha/highcourt', async (req, res) => {
     console.log(`[${new Date().toISOString()}] Handling High Court Captcha request (POST).`);
 
-    // EXPECTING: req.body.cookies will now be a STRING like "HCSERVICES_SESSID=abc; JSESSION=xyz"
-    const cookiesStringFromFrontend = req.body.cookies;
+    const cookiesStringFromFrontend = req.body.cookies; // This is the string from frontend
 
     if (!cookiesStringFromFrontend) {
         console.warn(`[${new Date().toISOString()}] Missing cookies string in request body for High Court Captcha.`);
         return res.status(400).json({ error: 'Cookies string is required in the request body.' });
     }
 
-    // Parse the incoming cookie string
-    const { parsedCookies: initialCookiesFromFrontend, sessionId: initialSessionIdFromFrontend } = parseCookieString(cookiesStringFromFrontend);
+    // No need to parse here if fetchCaptcha is expecting the string directly
+    // const { parsedCookies: initialCookiesFromFrontend, sessionId: initialSessionIdFromFrontend } = parseCookieString(cookiesStringFromFrontend);
+    // console.log(`  Received and parsed cookies from body:`, initialCookiesFromFrontend);
 
-    console.log(`  Received and parsed cookies from body:`, initialCookiesFromFrontend);
-    console.log(`  Identified initial session ID from body:`, initialSessionIdFromFrontend);
+    console.log(`  Received cookies string from body: ${cookiesStringFromFrontend}`); // Log the raw string
 
     const referer = req.headers['referer'] || 'https://hcservices.ecourts.gov.in/';
     const userAgent = req.headers['user-agent'];
@@ -207,10 +206,9 @@ app.post('/captcha/highcourt', async (req, res) => {
     const captchaUrl = `https://hcservices.ecourts.gov.in/hcservices/securimage/securimage_show.php?${cacheBuster}`;
 
     try {
-        // Pass the raw string to fetchCaptcha (it handles parsing Set-Cookie headers)
+        // Pass the raw string directly to fetchCaptcha's cookiesString argument
         const { imageBase64, cookies: newCookies, sessionId } = await fetchCaptcha(captchaUrl, cookiesStringFromFrontend, referer, userAgent);
 
-        // Send back a JSON object containing the Base64 image, new cookies (object), and session ID
         res.status(200).json({
             captchaImageBase64: imageBase64,
             cookies: newCookies, // Send back the new cookies object received from the eCourts server
@@ -223,6 +221,7 @@ app.post('/captcha/highcourt', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
 
 // --- Route for District Court Captcha ---
 app.post('/captcha/districtcourt', async (req, res) => {
