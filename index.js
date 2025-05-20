@@ -1,7 +1,8 @@
 // Import necessary libraries
 const express = require('express');
 const axios = require('axios');
-const cookieParser = require('cookie-parser');
+// Removed cookie-parser as cookies will be sent in the body
+// const cookieParser = require('cookie-parser');
 const cors = require('cors'); // Import cors
 
 // Create an Express application instance
@@ -11,28 +12,34 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // Use middleware
-app.use(cors()); // Enable CORS for all routes
-app.use(cookieParser()); // Parse cookies from incoming requests
-app.use(express.json()); // For parsing application/json (if needed for other routes)
+app.use(cors({
+  origin: 'https://verdant-cucurucho-13134b.netlify.app' // Allow requests only from this specific origin
+}));
+// Removed cookie-parser middleware
+// app.use(cookieParser()); // Parse cookies from incoming requests
+app.use(express.json()); // For parsing application/json (required to receive cookies in body)
 app.use(express.urlencoded({ extended: true })); // For parsing application/x-www-form-urlencoded (if needed)
 
 // Middleware to log incoming requests
 app.use((req, res, next) => {
     console.log(`[${new Date().toISOString()}] Incoming Request: ${req.method} ${req.originalUrl}`);
     console.log('  Headers:', req.headers);
-    console.log('  Cookies:', req.cookies); // Log parsed cookies
+    // Cookies will now be logged from the body in specific routes if sent
+    // console.log('  Cookies:', req.cookies); // cookie-parser no longer used
     console.log('  Query Params:', req.query); // Log query parameters
+    console.log('  Request Body:', req.body); // Log request body (will contain cookies if sent)
     next(); // Continue to the next middleware or route handler
 });
 
 
 // --- Helper function to fetch captcha ---
-async function fetchCaptcha(url, cookies, referer, userAgent) {
+// This function now expects the cookies as a pre-formatted string
+async function fetchCaptcha(url, cookiesString, referer, userAgent) {
     console.log(`[${new Date().toISOString()}] Making external request to: ${url}`);
     console.log('  Request Headers (to external site):', {
         'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
-        'Cookie': cookies,
+        'Cookie': cookiesString, // <--- THIS LINE USES THE COOKIES STRING PASSED FROM THE ROUTE
         'Referer': referer,
         'User-Agent': userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
         'Priority': 'i',
@@ -51,20 +58,19 @@ async function fetchCaptcha(url, cookies, referer, userAgent) {
         const response = await axios.get(url, {
             headers: {
                 'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5', // Adjust based on the specific curl request
-                'Cookie': cookies, // <--- THIS LINE USES THE COOKIES RECEIVED FROM THE FRONTEND
-                'Referer': referer, // Pass referer received from the frontend
-                'User-Agent': userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36', // Default or pass from frontend
-                // Include other headers from the curl requests as needed
-                'Priority': 'i', // From curl 1
-                'sec-ch-ua': '"Chromium";v="136", "Brave";v="136", "Not.A/Brand";v="99"', // From curl requests
-                'sec-ch-ua-mobile': '?0', // From curl requests
-                'sec-ch-ua-platform': '"Windows"', // From curl requests
-                'sec-fetch-dest': 'image', // From curl requests
-                'sec-fetch-mode': 'no-cors', // From curl requests
-                'sec-fetch-site': 'same-origin', // From curl requests
-                'sec-gpc': '1', // From curl requests
-                'Connection': 'keep-alive' // From curl 2
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Cookie': cookiesString, // <--- Use the cookies string passed to the function
+                'Referer': referer,
+                'User-Agent': userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+                'Priority': 'i',
+                'sec-ch-ua': '"Chromium";v="136", "Brave";v="136", "Not.A/Brand";v="99"',
+                'sec-ch-ua-mobile': '?0',
+                'sec-ch-ua-platform': '"Windows"',
+                'sec-fetch-dest': 'image',
+                'sec-fetch-mode': 'no-cors',
+                'sec-fetch-site': 'same-origin',
+                'sec-gpc': '1',
+                'Connection': 'keep-alive'
             },
             responseType: 'arraybuffer' // Crucial for handling binary image data
         });
@@ -105,15 +111,25 @@ app.get('/health', (req, res) => {
 
 
 // --- Route for High Court Captcha ---
-app.get('/captcha/highcourt', async (req, res) => {
-    console.log(`[${new Date().toISOString()}] Handling High Court Captcha request.`);
+// This route now expects cookies in the request body as JSON
+app.post('/captcha/highcourt', async (req, res) => { // Changed to POST to receive body
+    console.log(`[${new Date().toISOString()}] Handling High Court Captcha request (POST).`);
 
-    // Extract cookies from the frontend request using cookie-parser
-    // req.cookies is an object { cookieName: cookieValue, ... }
-    // We need to format it back into a string for the 'Cookie' header.
-    const cookiesString = Object.entries(req.cookies)
+    // Extract cookies from the request body
+    const cookiesFromFrontend = req.body.cookies; // Assuming frontend sends { cookies: { cookieName: cookieValue, ... } }
+
+    if (!cookiesFromFrontend) {
+        console.warn(`[${new Date().toISOString()}] Missing cookies in request body for High Court Captcha.`);
+        return res.status(400).send('Cookies are required in the request body.');
+    }
+
+    // Format the cookies object into a string for the 'Cookie' header
+    const cookiesString = Object.entries(cookiesFromFrontend)
         .map(([key, value]) => `${key}=${value}`)
-        .join('; '); // <--- COOKIES FROM FRONTEND ARE CONVERTED TO STRING HERE
+        .join('; ');
+
+    console.log(`  Received and formatted cookies from body: ${cookiesString}`);
+
 
     const referer = req.headers['referer'] || 'https://hcservices.ecourts.gov.in/'; // Use frontend referer or default
     const userAgent = req.headers['user-agent']; // Use frontend user-agent
@@ -125,6 +141,7 @@ app.get('/captcha/highcourt', async (req, res) => {
     const captchaUrl = `https://hcservices.ecourts.gov.in/hcservices/securimage/securimage_show.php?${cacheBuster}`;
 
     try {
+        // Pass the constructed cookies string to the helper function
         const { data, contentType } = await fetchCaptcha(captchaUrl, cookiesString, referer, userAgent);
 
         // Set the content type header for the response
@@ -141,33 +158,41 @@ app.get('/captcha/highcourt', async (req, res) => {
 });
 
 // --- Route for District Court Captcha ---
-app.get('/captcha/districtcourt', async (req, res) => {
-    console.log(`[${new Date().toISOString()}] Handling District Court Captcha request.`);
+// This route now expects cookies in the request body as JSON
+app.post('/captcha/districtcourt', async (req, res) => { // Changed to POST to receive body
+    console.log(`[${new Date().toISOString()}] Handling District Court Captcha request (POST).`);
 
-    // Extract cookies from the frontend request using cookie-parser
-    const cookiesString = Object.entries(req.cookies)
+    // Extract cookies and captchaId from the request body
+    const cookiesFromFrontend = req.body.cookies; // Assuming frontend sends { cookies: { cookieName: cookieValue, ... }, id: '...' }
+    const captchaId = req.body.id; // Assuming frontend sends the ID in the body
+
+    if (!cookiesFromFrontend) {
+        console.warn(`[${new Date().toISOString()}] Missing cookies in request body for District Court Captcha.`);
+        return res.status(400).send('Cookies are required in the request body.');
+    }
+
+    if (!captchaId) {
+        console.error(`[${new Date().toISOString()}] Missing Captcha ID in request body for District Court request.`);
+        return res.status(400).send('Captcha ID is required in the request body.');
+    }
+
+    // Format the cookies object into a string for the 'Cookie' header
+    const cookiesString = Object.entries(cookiesFromFrontend)
         .map(([key, value]) => `${key}=${value}`)
-        .join('; '); // <--- COOKIES FROM FRONTEND ARE CONVERTED TO STRING HERE
+        .join('; ');
+
+    console.log(`  Received and formatted cookies from body: ${cookiesString}`);
+    console.log(`  Received Captcha ID from body: ${captchaId}`);
+
 
     const referer = req.headers['referer'] || 'https://lucknow.dcourts.gov.in/case-status-search-by-petitioner-respondent/'; // Use frontend referer or default
     const userAgent = req.headers['user-agent']; // Use frontend user-agent
 
-    // The 'id=93b4006f1343d3128525a65c5209b923b05ffc6b' in the original URL
-    // likely needs to be passed dynamically from your frontend, as it seems
-    // to be a session or request specific identifier.
-    // For this example, we'll use a placeholder. You MUST replace this
-    // with the actual ID your frontend obtains.
-    const captchaId = req.query.id; // Assuming the frontend sends the ID as a query parameter like /captcha/districtcourt?id=YOUR_ID
-    console.log(`  Received Captcha ID from frontend: ${captchaId}`);
-
-    if (!captchaId) {
-        console.error(`[${new Date().toISOString()}] Missing Captcha ID for District Court request.`);
-        return res.status(400).send('Captcha ID is required for district court captcha.');
-    }
 
     const captchaUrl = `https://lucknow.dcourts.gov.in/?_siwp_captcha&id=${captchaId}`;
 
     try {
+        // Pass the constructed cookies string to the helper function
         const { data, contentType } = await fetchCaptcha(captchaUrl, cookiesString, referer, userAgent);
 
         // Set the content type header for the response
