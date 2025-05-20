@@ -26,7 +26,7 @@ app.use((req, res, next) => {
 });
 
 // --- Helper function to fetch captcha ---
-// This function now returns Base64 image and any new/updated cookies
+// This function now returns Base64 image, new/updated cookies, and the session ID
 async function fetchCaptcha(url, cookiesString, referer, userAgent) {
     console.log(`[${new Date().toISOString()}] Making external request to: ${url}`);
     const requestHeaders = {
@@ -64,22 +64,37 @@ async function fetchCaptcha(url, cookiesString, referer, userAgent) {
         // Extract and return Set-Cookie headers
         const setCookieHeaders = response.headers['set-cookie'];
         let receivedCookies = {};
+        let sessionId = null; // Initialize sessionId
+
         if (setCookieHeaders) {
             setCookieHeaders.forEach(cookieStr => {
-                // Parse each cookie string, e.g., "PHPSESSID=abc; path=/; HttpOnly"
                 const parts = cookieStr.split(';')[0].split('=');
                 if (parts.length >= 2) {
                     const cookieName = parts[0];
                     const cookieValue = parts.slice(1).join('=');
                     receivedCookies[cookieName] = cookieValue;
+
+                    // --- Identify and store the session ID ---
+                    // Common session cookie names for PHP, ASP.NET, Java, etc.
+                    if (cookieName.toLowerCase() === 'phpsessid' || // For PHP
+                        cookieName.toLowerCase().startsWith('asp.net_sessionid') || // For ASP.NET
+                        cookieName.toLowerCase().startsWith('jsessionid') || // For Java Servlets
+                        cookieName.toLowerCase().includes('session') // Generic check
+                    ) {
+                        sessionId = cookieValue;
+                    }
                 }
             });
             console.log(`[${new Date().toISOString()}] Received new/updated cookies:`, receivedCookies);
+            if (sessionId) {
+                console.log(`[${new Date().toISOString()}] Identified Session ID: ${sessionId}`);
+            }
         }
 
         return {
             imageBase64: `data:${contentType};base64,${imageBase64}`, // Data URI format
-            cookies: receivedCookies // Return parsed cookies
+            cookies: receivedCookies, // Return parsed cookies
+            sessionId: sessionId // Return the extracted session ID
         };
 
     } catch (error) {
@@ -87,7 +102,6 @@ async function fetchCaptcha(url, cookiesString, referer, userAgent) {
         if (error.response) {
             console.error('  Response Status:', error.response.status);
             console.error('  Response Headers:', error.response.headers);
-            // If the error is a timeout, log that specifically
             if (error.code === 'ECONNABORTED') {
                 console.error('  Full Error Details: AxiosError: timeout of 45000ms exceeded');
             }
@@ -114,7 +128,7 @@ app.post('/captcha/highcourt', async (req, res) => {
 
     if (!cookiesFromFrontend) {
         console.warn(`[${new Date().toISOString()}] Missing cookies in request body for High Court Captcha.`);
-        return res.status(400).json({ error: 'Cookies are required in the request body.' }); // Send JSON error
+        return res.status(400).json({ error: 'Cookies are required in the request body.' });
     }
 
     const cookiesString = Object.entries(cookiesFromFrontend)
@@ -130,18 +144,19 @@ app.post('/captcha/highcourt', async (req, res) => {
     const captchaUrl = `https://hcservices.ecourts.gov.in/hcservices/securimage/securimage_show.php?${cacheBuster}`;
 
     try {
-        const { imageBase64, cookies: newCookies } = await fetchCaptcha(captchaUrl, cookiesString, referer, userAgent);
+        const { imageBase64, cookies: newCookies, sessionId } = await fetchCaptcha(captchaUrl, cookiesString, referer, userAgent);
 
-        // Send back a JSON object containing both the Base64 image and any new cookies
+        // Send back a JSON object containing the Base64 image, new cookies, and session ID
         res.status(200).json({
             captchaImageBase64: imageBase64,
-            cookies: newCookies // Send back the new cookies received from the eCourts server
+            cookies: newCookies, // Send back the new cookies received from the eCourts server
+            sessionId: sessionId // Send back the extracted session ID
         });
-        console.log(`[${new Date().toISOString()}] Sent High Court Captcha response with Base64 image and new cookies.`);
+        console.log(`[${new Date().toISOString()}] Sent High Court Captcha response with Base64 image, new cookies, and session ID.`);
 
     } catch (error) {
         console.error(`[${new Date().toISOString()}] Error in High Court Captcha route: ${error.message}`);
-        res.status(500).json({ error: error.message }); // Send JSON error
+        res.status(500).json({ error: error.message });
     }
 });
 
@@ -175,13 +190,14 @@ app.post('/captcha/districtcourt', async (req, res) => {
     const captchaUrl = `https://lucknow.dcourts.gov.in/?_siwp_captcha&id=${captchaId}`;
 
     try {
-        const { imageBase64, cookies: newCookies } = await fetchCaptcha(captchaUrl, cookiesString, referer, userAgent);
+        const { imageBase64, cookies: newCookies, sessionId } = await fetchCaptcha(captchaUrl, cookiesString, referer, userAgent);
 
         res.status(200).json({
             captchaImageBase64: imageBase64,
-            cookies: newCookies // Send back the new cookies received from the eCourts server
+            cookies: newCookies, // Send back the new cookies received from the eCourts server
+            sessionId: sessionId // Send back the extracted session ID
         });
-        console.log(`[${new Date().toISOString()}] Sent District Court Captcha response with Base64 image and new cookies.`);
+        console.log(`[${new Date().toISOString()}] Sent District Court Captcha response with Base64 image, new cookies, and session ID.`);
 
     } catch (error) {
         console.error(`[${new Date().toISOString()}] Error in District Court Captcha route: ${error.message}`);
