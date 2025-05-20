@@ -25,6 +25,55 @@ app.use((req, res, next) => {
     next(); // Continue to the next middleware or route handler
 });
 
+/**
+ * Parses a cookie string into an object, handling potential duplicates by taking the last value.
+ * Also extracts common session IDs.
+ * @param {string} cookieString - The raw Cookie header string.
+ * @returns {{parsedCookies: object, sessionId: string|null}}
+ */
+function parseCookieString(cookieString) {
+    const parsedCookies = {};
+    let sessionId = null;
+
+    if (!cookieString) {
+        return { parsedCookies: {}, sessionId: null };
+    }
+
+    // Split by '; ' to get individual cookie parts
+    cookieString.split('; ').forEach(part => {
+        const [name, value] = part.split('=');
+        if (name && value) {
+            // Assign the value. If there are duplicates, the last one wins (as in browser behavior).
+            parsedCookies[name.trim()] = value.trim();
+
+            // Check for common session cookie names
+            const lowerCaseName = name.trim().toLowerCase();
+            if (lowerCaseName === 'phpsessid' ||
+                lowerCaseName.startsWith('asp.net_sessionid') ||
+                lowerCaseName.startsWith('jsessionid') ||
+                lowerCaseName.includes('session') || // Generic check
+                lowerCaseName === 'hcservices_sessid' // Specific to your case
+            ) {
+                sessionId = value.trim();
+            }
+        }
+    });
+
+    // A common pattern is that the JSESSIONID or PHPSESSID is the main session ID.
+    // Prioritize specific ones if they exist.
+    if (parsedCookies['JSESSIONID']) {
+        sessionId = parsedCookies['JSESSIONID'];
+    } else if (parsedCookies['PHPSESSID']) {
+        sessionId = parsedCookies['PHPSESSID'];
+    } else if (parsedCookies['HCSERVICES_SESSID']) { // Specific to your case
+        sessionId = parsedCookies['HCSERVICES_SESSID'];
+    }
+
+
+    return { parsedCookies, sessionId };
+}
+
+
 // --- Helper function to fetch captcha ---
 // This function now returns Base64 image, new/updated cookies, and the session ID
 async function fetchCaptcha(url, cookiesString, referer, userAgent) {
@@ -67,24 +116,37 @@ async function fetchCaptcha(url, cookiesString, referer, userAgent) {
         let sessionId = null; // Initialize sessionId
 
         if (setCookieHeaders) {
+            // Process all Set-Cookie headers to build a comprehensive cookie object
+            // and identify the primary session ID.
             setCookieHeaders.forEach(cookieStr => {
                 const parts = cookieStr.split(';')[0].split('=');
                 if (parts.length >= 2) {
                     const cookieName = parts[0];
                     const cookieValue = parts.slice(1).join('=');
+                    // Store the cookie. If duplicate, the last one set by the server is typically the one used.
                     receivedCookies[cookieName] = cookieValue;
-
-                    // --- Identify and store the session ID ---
-                    // Common session cookie names for PHP, ASP.NET, Java, etc.
-                    if (cookieName.toLowerCase() === 'phpsessid' || // For PHP
-                        cookieName.toLowerCase().startsWith('asp.net_sessionid') || // For ASP.NET
-                        cookieName.toLowerCase().startsWith('jsessionid') || // For Java Servlets
-                        cookieName.toLowerCase().includes('session') // Generic check
-                    ) {
-                        sessionId = cookieValue;
-                    }
                 }
             });
+
+            // Now, from the *parsed* receivedCookies, try to identify the sessionId
+            // Prioritize specific session cookies
+            if (receivedCookies['JSESSIONID']) {
+                sessionId = receivedCookies['JSESSIONID'];
+            } else if (receivedCookies['PHPSESSID']) {
+                sessionId = receivedCookies['PHPSESSID'];
+            } else if (receivedCookies['HCSERVICES_SESSID']) {
+                sessionId = receivedCookies['HCSERVICES_SESSID'];
+            } else {
+                // Fallback to a generic search if specific ones aren't found
+                for (const name in receivedCookies) {
+                    if (name.toLowerCase().includes('session')) {
+                        sessionId = receivedCookies[name];
+                        break; // Take the first one found
+                    }
+                }
+            }
+
+
             console.log(`[${new Date().toISOString()}] Received new/updated cookies:`, receivedCookies);
             if (sessionId) {
                 console.log(`[${new Date().toISOString()}] Identified Session ID: ${sessionId}`);
@@ -93,7 +155,7 @@ async function fetchCaptcha(url, cookiesString, referer, userAgent) {
 
         return {
             imageBase64: `data:${contentType};base64,${imageBase64}`, // Data URI format
-            cookies: receivedCookies, // Return parsed cookies
+            cookies: receivedCookies, // Return parsed cookies object
             sessionId: sessionId // Return the extracted session ID
         };
 
@@ -124,18 +186,19 @@ app.get('/health', (req, res) => {
 app.post('/captcha/highcourt', async (req, res) => {
     console.log(`[${new Date().toISOString()}] Handling High Court Captcha request (POST).`);
 
-    const cookiesFromFrontend = req.body.cookies;
+    // EXPECTING: req.body.cookies will now be a STRING like "HCSERVICES_SESSID=abc; JSESSION=xyz"
+    const cookiesStringFromFrontend = req.body.cookies;
 
-    if (!cookiesFromFrontend) {
-        console.warn(`[${new Date().toISOString()}] Missing cookies in request body for High Court Captcha.`);
-        return res.status(400).json({ error: 'Cookies are required in the request body.' });
+    if (!cookiesStringFromFrontend) {
+        console.warn(`[${new Date().toISOString()}] Missing cookies string in request body for High Court Captcha.`);
+        return res.status(400).json({ error: 'Cookies string is required in the request body.' });
     }
 
-    const cookiesString = Object.entries(cookiesFromFrontend)
-        .map(([key, value]) => `${key}=${value}`)
-        .join('; ');
+    // Parse the incoming cookie string
+    const { parsedCookies: initialCookiesFromFrontend, sessionId: initialSessionIdFromFrontend } = parseCookieString(cookiesStringFromFrontend);
 
-    console.log(`  Received and formatted cookies from body: ${cookiesString}`);
+    console.log(`  Received and parsed cookies from body:`, initialCookiesFromFrontend);
+    console.log(`  Identified initial session ID from body:`, initialSessionIdFromFrontend);
 
     const referer = req.headers['referer'] || 'https://hcservices.ecourts.gov.in/';
     const userAgent = req.headers['user-agent'];
@@ -144,12 +207,13 @@ app.post('/captcha/highcourt', async (req, res) => {
     const captchaUrl = `https://hcservices.ecourts.gov.in/hcservices/securimage/securimage_show.php?${cacheBuster}`;
 
     try {
-        const { imageBase64, cookies: newCookies, sessionId } = await fetchCaptcha(captchaUrl, cookiesString, referer, userAgent);
+        // Pass the raw string to fetchCaptcha (it handles parsing Set-Cookie headers)
+        const { imageBase64, cookies: newCookies, sessionId } = await fetchCaptcha(captchaUrl, cookiesStringFromFrontend, referer, userAgent);
 
-        // Send back a JSON object containing the Base64 image, new cookies, and session ID
+        // Send back a JSON object containing the Base64 image, new cookies (object), and session ID
         res.status(200).json({
             captchaImageBase64: imageBase64,
-            cookies: newCookies, // Send back the new cookies received from the eCourts server
+            cookies: newCookies, // Send back the new cookies object received from the eCourts server
             sessionId: sessionId // Send back the extracted session ID
         });
         console.log(`[${new Date().toISOString()}] Sent High Court Captcha response with Base64 image, new cookies, and session ID.`);
@@ -164,12 +228,13 @@ app.post('/captcha/highcourt', async (req, res) => {
 app.post('/captcha/districtcourt', async (req, res) => {
     console.log(`[${new Date().toISOString()}] Handling District Court Captcha request (POST).`);
 
-    const cookiesFromFrontend = req.body.cookies;
+    // EXPECTING: req.body.cookies will now be a STRING
+    const cookiesStringFromFrontend = req.body.cookies;
     const captchaId = req.body.id;
 
-    if (!cookiesFromFrontend) {
-        console.warn(`[${new Date().toISOString()}] Missing cookies in request body for District Court Captcha.`);
-        return res.status(400).json({ error: 'Cookies are required in the request body.' });
+    if (!cookiesStringFromFrontend) {
+        console.warn(`[${new Date().toISOString()}] Missing cookies string in request body for District Court Captcha.`);
+        return res.status(400).json({ error: 'Cookies string is required in the request body.' });
     }
 
     if (!captchaId) {
@@ -177,12 +242,13 @@ app.post('/captcha/districtcourt', async (req, res) => {
         return res.status(400).json({ error: 'Captcha ID is required in the request body.' });
     }
 
-    const cookiesString = Object.entries(cookiesFromFrontend)
-        .map(([key, value]) => `${key}=${value}`)
-        .join('; ');
+    // Parse the incoming cookie string
+    const { parsedCookies: initialCookiesFromFrontend, sessionId: initialSessionIdFromFrontend } = parseCookieString(cookiesStringFromFrontend);
 
-    console.log(`  Received and formatted cookies from body: ${cookiesString}`);
+    console.log(`  Received and parsed cookies from body:`, initialCookiesFromFrontend);
+    console.log(`  Identified initial session ID from body:`, initialSessionIdFromFrontend);
     console.log(`  Received Captcha ID from body: ${captchaId}`);
+
 
     const referer = req.headers['referer'] || 'https://lucknow.dcourts.gov.in/case-status-search-by-petitioner-respondent/';
     const userAgent = req.headers['user-agent'];
@@ -190,11 +256,11 @@ app.post('/captcha/districtcourt', async (req, res) => {
     const captchaUrl = `https://lucknow.dcourts.gov.in/?_siwp_captcha&id=${captchaId}`;
 
     try {
-        const { imageBase64, cookies: newCookies, sessionId } = await fetchCaptcha(captchaUrl, cookiesString, referer, userAgent);
+        const { imageBase64, cookies: newCookies, sessionId } = await fetchCaptcha(captchaUrl, cookiesStringFromFrontend, referer, userAgent);
 
         res.status(200).json({
             captchaImageBase64: imageBase64,
-            cookies: newCookies, // Send back the new cookies received from the eCourts server
+            cookies: newCookies, // Send back the new cookies object received from the eCourts server
             sessionId: sessionId // Send back the extracted session ID
         });
         console.log(`[${new Date().toISOString()}] Sent District Court Captcha response with Base64 image, new cookies, and session ID.`);
